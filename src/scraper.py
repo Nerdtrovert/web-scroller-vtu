@@ -282,6 +282,61 @@ class ResultScraper:
         logger.error(f"Exhausted {max_retries} captcha attempts for {usn}.")
         return False
     
+    def scroll_results_into_view(self):
+        """Scroll the results table smoothly into view so all subject marks are rendered."""
+        try:
+            table_elem = self.driver.find_element(
+                By.XPATH, '//*[@id="dataPrint"]//div[contains(@class, "divTable")] | //*[@id="dataPrint"]//table'
+            )
+            self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", table_elem)
+            time.sleep(0.4)
+        except Exception:
+            try:
+                self.driver.execute_script("window.scrollTo({top: 350, behavior: 'smooth'});")
+                time.sleep(0.4)
+            except Exception:
+                pass
+
+    def capture_full_result_screenshot(self, output_path):
+        """
+        Capture a complete screenshot of the entire result sheet (from header to all subjects)
+        without cutting off any subject marks, using element bounding-box or CDP capture.
+        """
+        try:
+            # 1. Try element screenshot of #dataPrint (captures entire result card regardless of viewport)
+            try:
+                data_print = self.driver.find_element(By.ID, "dataPrint")
+                data_print.screenshot(output_path)
+                logger.info(f"Captured complete result card screenshot to {output_path}")
+                return True
+            except Exception as e:
+                logger.debug(f"Element screenshot of #dataPrint failed: {e}")
+
+            # 2. Try Chrome DevTools Protocol full-page screenshot
+            try:
+                import base64
+                metrics = self.driver.execute_cdp_cmd("Page.getLayoutMetrics", {})
+                content_size = metrics.get("contentSize", {})
+                w = int(content_size.get("width", 1280))
+                h = int(content_size.get("height", 1600))
+                shot = self.driver.execute_cdp_cmd("Page.captureScreenshot", {
+                    "captureBeyondViewport": True,
+                    "clip": {"x": 0, "y": 0, "width": w, "height": h, "scale": 1}
+                })
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(shot["data"]))
+                logger.info(f"Captured full-page CDP screenshot to {output_path}")
+                return True
+            except Exception as e:
+                logger.debug(f"CDP full-page screenshot failed: {e}")
+
+            # 3. Fallback: standard viewport screenshot
+            self.driver.save_screenshot(output_path)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to capture result screenshot: {e}")
+            return False
+
     def scrape_student_info(self):
         """
         Scrape student USN and name from the result page
@@ -314,45 +369,46 @@ class ResultScraper:
     
     def scrape_subjects(self):
         """
-        Scrape all subject details from the result page
+        Scrape all subject details from the result page.
+        Automatically scrolls table into view and uses textContent fallbacks
+        so that subjects below the fold are never missed.
         
         Returns:
             List of dictionaries containing subject data (name, ia, see, total, res)
         """
+        self.scroll_results_into_view()
         subjects = []
+
+        def _get_val(xpath):
+            try:
+                el = self.driver.find_element(By.XPATH, xpath)
+                txt = el.text
+                if not txt or not txt.strip():
+                    txt = el.get_attribute("innerText") or el.get_attribute("textContent") or ""
+                return txt.strip()
+            except NoSuchElementException:
+                return None
         
         for k in range(1, MAX_SUBJECTS + 1):
-            try:
-                # Build XPath for current subject row
-                base_xpath = XPATH_SUBJECT_BASE.format(k + 1)
-                
-                # Extract subject information
-                sub_name = self.driver.find_element(
-                    By.XPATH, f"{base_xpath}/div[{SUBJECT_NAME_INDEX}]"
-                ).text
-                ia = self.driver.find_element(
-                    By.XPATH, f"{base_xpath}/div[{SUBJECT_IA_INDEX}]"
-                ).text
-                see = self.driver.find_element(
-                    By.XPATH, f"{base_xpath}/div[{SUBJECT_SEE_INDEX}]"
-                ).text
-                total = self.driver.find_element(
-                    By.XPATH, f"{base_xpath}/div[{SUBJECT_TOTAL_INDEX}]"
-                ).text
-                res = self.driver.find_element(
-                    By.XPATH, f"{base_xpath}/div[{SUBJECT_RESULT_INDEX}]"
-                ).text
-                
-                subjects.append({
-                    "name": sub_name,
-                    "ia": ia,
-                    "see": see,
-                    "total": total,
-                    "res": res
-                })
-            except NoSuchElementException:
-                # No more subjects found
+            base_xpath = XPATH_SUBJECT_BASE.format(k + 1)
+            sub_name = _get_val(f"{base_xpath}/div[{SUBJECT_NAME_INDEX}]")
+            
+            if not sub_name:
+                # No more subject rows found
                 break
+
+            ia = _get_val(f"{base_xpath}/div[{SUBJECT_IA_INDEX}]") or ""
+            see = _get_val(f"{base_xpath}/div[{SUBJECT_SEE_INDEX}]") or ""
+            total = _get_val(f"{base_xpath}/div[{SUBJECT_TOTAL_INDEX}]") or ""
+            res = _get_val(f"{base_xpath}/div[{SUBJECT_RESULT_INDEX}]") or ""
+            
+            subjects.append({
+                "name": sub_name,
+                "ia": ia,
+                "see": see,
+                "total": total,
+                "res": res
+            })
         
         logger.info(f"Scraped {len(subjects)} subjects.")
         return subjects

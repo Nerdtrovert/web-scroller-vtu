@@ -158,6 +158,12 @@ def process_results(gui, inputs):
             # Extract all subject details
             subjects = scraper.scrape_subjects()
             
+            # Save complete full-card screenshot of the result (never cut off)
+            try:
+                scraper.capture_full_result_screenshot(f"result_{page_usn}.png")
+            except Exception:
+                pass
+
             # Record structured student result
             results_data.append({
                 "usn": page_usn,

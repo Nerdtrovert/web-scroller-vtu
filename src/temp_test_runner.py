@@ -91,6 +91,55 @@ def solve_page_captcha(driver):
         return None
 
 
+def get_cell_text(elem):
+    """Retrieve text safely using textContent / innerText fallbacks if element is off-screen."""
+    txt = elem.text
+    if not txt or not txt.strip():
+        txt = elem.get_attribute("innerText") or elem.get_attribute("textContent") or ""
+    return txt.strip()
+
+
+def capture_full_result_screenshot(driver, output_path):
+    """
+    Capture the complete result card without cutting off lower subjects.
+    Uses #dataPrint element screenshot or Chrome CDP full-page capture.
+    """
+    try:
+        # 1. Element screenshot of #dataPrint (cleanest, captures entire result card)
+        try:
+            data_print = driver.find_element(By.ID, "dataPrint")
+            data_print.screenshot(output_path)
+            print(f"[+] Saved complete result card screenshot: {output_path}")
+            return True
+        except Exception:
+            pass
+
+        # 2. Chrome DevTools Protocol full-page screenshot
+        try:
+            import base64
+            metrics = driver.execute_cdp_cmd("Page.getLayoutMetrics", {})
+            content_size = metrics.get("contentSize", {})
+            w = int(content_size.get("width", 1280))
+            h = int(content_size.get("height", 1600))
+            shot = driver.execute_cdp_cmd("Page.captureScreenshot", {
+                "captureBeyondViewport": True,
+                "clip": {"x": 0, "y": 0, "width": w, "height": h, "scale": 1}
+            })
+            with open(output_path, "wb") as f:
+                f.write(base64.b64decode(shot["data"]))
+            print(f"[+] Saved full-page CDP screenshot: {output_path}")
+            return True
+        except Exception:
+            pass
+
+        # 3. Fallback to viewport screenshot
+        driver.save_screenshot(output_path)
+        return True
+    except Exception as e:
+        print(f"[-] Screenshot capture error: {e}")
+        return False
+
+
 def scrape_result_data(driver, usn):
     data = {
         "usn": usn,
@@ -99,14 +148,24 @@ def scrape_result_data(driver, usn):
         "subjects": []
     }
 
+    # Scroll the results table smoothly into view so all subject rows are active & rendered
+    try:
+        table_elem = driver.find_element(
+            By.XPATH, '//*[@id="dataPrint"]//div[contains(@class, "divTable")] | //*[@id="dataPrint"]//table'
+        )
+        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", table_elem)
+        time.sleep(0.4)
+    except Exception:
+        pass
+
     # 1. Student Name & USN from table
     try:
         rows = driver.find_elements(By.TAG_NAME, "tr")
         for tr in rows:
             tds = tr.find_elements(By.TAG_NAME, "td")
             if len(tds) >= 2:
-                lbl = tds[0].text.strip()
-                val = tds[-1].text.strip().lstrip(":").strip()
+                lbl = get_cell_text(tds[0])
+                val = get_cell_text(tds[-1]).lstrip(":").strip()
                 if "Seat Number" in lbl or "USN" in lbl:
                     data["usn"] = val
                 elif "Student Name" in lbl:
@@ -117,7 +176,8 @@ def scrape_result_data(driver, usn):
     # Fallback for name / usn via xpath
     if not data["name"]:
         try:
-            data["name"] = driver.find_element(By.XPATH, '//*[@id="dataPrint"]//table//tr[2]/td[2]').text.strip().lstrip(":").strip()
+            name_el = driver.find_element(By.XPATH, '//*[@id="dataPrint"]//table//tr[2]/td[2]')
+            data["name"] = get_cell_text(name_el).lstrip(":").strip()
         except Exception:
             pass
 
@@ -138,9 +198,9 @@ def scrape_result_data(driver, usn):
             row_elems = driver.find_elements(By.XPATH, '//div[contains(@class, "divTableRow")]')
 
         for r in row_elems:
-            cells = [c.text.strip() for c in r.find_elements(By.XPATH, './div[contains(@class, "divTableCell")]')]
+            cells = [get_cell_text(c) for c in r.find_elements(By.XPATH, './div[contains(@class, "divTableCell")]')]
             if not cells:
-                cells = [c.text.strip() for c in r.find_elements(By.XPATH, './div') if c.text.strip()]
+                cells = [get_cell_text(c) for c in r.find_elements(By.XPATH, './div') if get_cell_text(c)]
 
             # Skip header row or empty rows or legend rows
             if not cells or "Subject Code" in cells[0] or "PASS" in cells[0] or "->" in cells[0]:
@@ -165,7 +225,7 @@ def scrape_result_data(driver, usn):
         try:
             for table in driver.find_elements(By.TAG_NAME, "table"):
                 for row in table.find_elements(By.TAG_NAME, "tr"):
-                    cols = [col.text.strip() for col in row.find_elements(By.TAG_NAME, "td")]
+                    cols = [get_cell_text(col) for col in row.find_elements(By.TAG_NAME, "td")]
                     if len(cols) >= 6 and cols[0] != "Subject Code":
                         data["subjects"].append({
                             "code": cols[0],
@@ -360,7 +420,7 @@ def main():
                             print(f"    - {s['code']} ({s['name']}): IA={s['ia']} SEE={s['see']} Total={s['total']} Res={s['res']}")
 
                         results.append(stud_data)
-                        driver.save_screenshot(f"result_{usn}.png")
+                        capture_full_result_screenshot(driver, f"result_{usn}.png")
                         break
 
                 except Exception as e:
