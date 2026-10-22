@@ -1,0 +1,9 @@
+selenium
+openpyxl
+xlwt
+pillow
+pytesseract
+tesseract-bin
+python-docx
+pypdf
+reportlab

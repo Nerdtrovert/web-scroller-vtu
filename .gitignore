@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs
+*.log
+app.log
+
+# Temporary test outputs
+result_*.png
+temp_captcha.png
+vtu_results_output.*
+.temp_*
+
+# Compiled binaries
+src/bin/vtu_vision_ocr
+*.exe
+
+# macOS
+.DS_Store
